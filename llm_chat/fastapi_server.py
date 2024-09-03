@@ -17,6 +17,8 @@ from tensorrt_llm.hlapi.llm_utils import QuantConfig
 from tensorrt_llm.logger import logger
 from tensorrt_llm.quantization.mode import QuantAlgo
 
+from llm_chat.openai.protocol import CompletionRequest, CompletionResponse
+
 # docs
 # https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/performance/perf-best-practices.md
 
@@ -92,6 +94,17 @@ class LlmServer:
         # Non-streaming case
         await promise.aresult()
         return JSONResponse({"text": promise.outputs[0].text})
+
+    async def create_completion(self, request: CompletionRequest, raw_request: Request):
+        generator = await openai_serving_completion.create_completion(
+            request, raw_request)
+        if isinstance(generator, ErrorResponse):
+            return JSONResponse(content=generator.model_dump(),
+                                status_code=generator.code)
+        elif isinstance(generator, CompletionResponse):
+            return JSONResponse(content=generator.model_dump())
+
+        return StreamingResponse(content=generator, media_type="text/event-stream")
 
     async def __call__(self, host, port):
         config = uvicorn.Config(self.app,
