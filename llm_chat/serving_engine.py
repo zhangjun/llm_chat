@@ -1,18 +1,185 @@
-from typing import AsyncGenerator, Optional, Literal, get_args
+from typing import AsyncGenerator, AsyncIterator, Optional, Literal, get_args, TypedDict, Sequence, Type, Iterator, cast
+from pydantic import Field
+from typing_extensions import Annotated, TypeIs, assert_never
 import uuid
 from http import HTTPStatus
+from fastapi import Request
 
 from tensorrt_llm.hlapi import LLM
+from tensorrt_llm.hlapi.llm import RequestOutput
 from llm_chat.utils import *
-from llm_chat.protocol import *
+from llm_chat.openai.protocol import *
 
 def random_uuid() -> str:
     return str(uuid.uuid4().hex)
 
+def is_list_of(
+    value: object,
+    typ: Type[T],
+    *,
+    check: Literal["first", "all"] = "first",
+) -> TypeIs[List[T]]:
+    if not isinstance(value, list):
+        return False
+
+    if check == "first":
+        return len(value) == 0 or isinstance(value[0], typ)
+    elif check == "all":
+        return all(isinstance(v, typ) for v in value)
+
+    assert_never(check)
+
+class ParsedText(TypedDict):
+    content: str
+    is_tokens: Literal[False]
+
+class ParsedTokens(TypedDict):
+    content: List[int]
+    is_tokens: Literal[True]
+
+def parse_and_batch_prompt(
+    prompt: Union[str, List[str], List[int], List[List[int]]],
+) -> Union[Sequence[ParsedText], Sequence[ParsedTokens]]:
+    if isinstance(prompt, str):
+        return [ParsedText(content=prompt, is_tokens=False)]
+    
+    if isinstance(prompt, list):
+        if len(prompt) == 0:
+            raise ValueError("please provide at least one prompt")
+
+        if is_list_of(prompt, str):
+            # case 2: array of strings
+            return [
+                elem for elem in prompt
+            ]
+        if is_list_of(prompt, int):
+            # case 3: array of tokens
+            return [ParsedTokens(content=prompt, is_tokens=True)]
+        if is_list_of(prompt, list):
+            if len(prompt[0]) == 0:
+                raise ValueError("please provide at least one prompt")
+
+            if is_list_of(prompt[0], int):
+                # case 4: array of token arrays
+                return [
+                    ParsedTokens(content=elem, is_tokens=True)
+                    for elem in prompt
+                ]
+
+    raise ValueError("prompt must be a string, array of strings, "
+                     "array of tokens, or array of token arrays")
+
+AnyRequest = Union[CompletionRequest, DetokenizeRequest,
+                   TokenizeRequest]
+
+class TextTokensPrompt(TypedDict):
+    prompt: str
+    prompt_token_ids: List[int]
+
 class OpenAIServing:
-    def __init__(llm_engine: LLM):
+    def __init__(self, llm_engine: LLM):
         super().__init__()
         self.llm_engine = llm_engine
+
+    def _tokenize_prompt_input_or_inputs(
+        self,
+        request: AnyRequest,
+        tokenizer: AnyTokenizer,
+        input_or_inputs: Union[str, List[str], List[int], List[List[int]]],
+        truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]] = None,
+        add_special_tokens: bool = True,
+    ) -> Iterator[TextTokensPrompt]:
+        """
+        Tokenize/detokenize depending on the input format.
+
+        According to `OpenAI API <https://platform.openai.com/docs/api-reference/embeddings/create>`_
+        , each input can be a string or array of tokens. Note that each request
+        can pass one or more inputs.
+        """
+        for prompt_input in parse_and_batch_prompt(input_or_inputs):
+            # Although our type checking is based on mypy,
+            # VSCode Pyright extension should still work properly
+            # "is True" is required for Pyright to perform type narrowing
+            # See: https://github.com/microsoft/pyright/issues/7672
+            if prompt_input["is_tokens"] is False:
+                yield self._normalize_prompt_text_to_input(
+                    request,
+                    tokenizer,
+                    prompt=prompt_input["content"],
+                    add_special_tokens=add_special_tokens,
+                )
+            else:
+                yield self._normalize_prompt_tokens_to_input(
+                    request,
+                    tokenizer,
+                    prompt_ids=prompt_input["content"],
+                )
+        
+    def _normalize_prompt_text_to_input(
+        self,
+        request: AnyRequest,
+        tokenizer: AnyTokenizer,
+        prompt: str,
+        # truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]],
+        add_special_tokens: bool,
+    ) -> TextTokensPrompt:
+        encoded = tokenizer(prompt, add_special_tokens=add_special_tokens)
+        # if truncate_prompt_tokens is None:
+        #     encoded = tokenizer(prompt, add_special_tokens=add_special_tokens)
+        # else:
+        #     encoded = tokenizer(prompt,
+        #                         add_special_tokens=add_special_tokens,
+        #                         truncation=True,
+        #                         max_length=truncate_prompt_tokens)
+
+        input_ids = encoded.input_ids
+
+        input_text = prompt
+
+        return self._validate_input(request, input_ids, input_text)
+
+    def _normalize_prompt_tokens_to_input(
+        self,
+        request: AnyRequest,
+        tokenizer: AnyTokenizer,
+        prompt_ids: List[int],
+        truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]],
+    ) -> TextTokensPrompt:
+        input_ids = prompt_ids
+        # if truncate_prompt_tokens is None:
+        #     input_ids = prompt_ids
+        # else:
+        #     input_ids = prompt_ids[-truncate_prompt_tokens:]
+
+        input_text = tokenizer.decode(input_ids)
+
+        return self._validate_input(request, input_ids, input_text)
+
+    def _validate_input(
+        self,
+        request: AnyRequest,
+        input_ids: List[int],
+        input_text: str,
+    ) -> TextTokensPrompt:
+        token_num = len(input_ids)
+
+        if request.max_tokens is None:
+            if token_num >= self.max_model_len:
+                raise ValueError(
+                    f"This model's maximum context length is "
+                    f"{self.max_model_len} tokens. However, you requested "
+                    f"{token_num} tokens in the messages, "
+                    f"Please reduce the length of the messages.")
+        elif token_num + request.max_tokens > self.max_model_len:
+            raise ValueError(
+                f"This model's maximum context length is "
+                f"{self.max_model_len} tokens. However, you requested "
+                f"{request.max_tokens + token_num} tokens "
+                f"({token_num} in the messages, "
+                f"{request.max_tokens} in the completion). "
+                f"Please reduce the length of the messages or completion.")
+
+        return TextTokensPrompt(prompt=input_text, prompt_token_ids=input_ids)
 
 class OpenAIServingCompletion(OpenAIServing):
     def __init__(self, llm_engine: LLM):
@@ -41,14 +208,33 @@ class OpenAIServingCompletion(OpenAIServing):
         return json_str
     
     async def create_completion(self, request: CompletionRequest, raw_request: Request):
+        model_name = request.model
         request_id = f"cmpl-{random_uuid()}"
         created_time = int(time.time())
         generators: List[AsyncGenerator[RequestOutput, None]] = []
         try:
+            # prompts = list(
+            #     self._tokenize_prompt_input_or_inputs(
+            #         request,
+            #         tokenizer,
+            #         request.prompt,
+            #         add_special_tokens=request.add_special_tokens,
+            #     ))
+            prompts = request.prompt if isinstance(request.prompt, list) else [request.prompt]
             for i, prompt_inputs in enumerate(prompts):
                 request_id_item = f"{request_id}-{i}"
-                generator = self.llm.generate_async(prompt_inputs["prompt_token_ids"],
-                                                streaming=srequest.stream,
+                # sampling_params = SamplingParams(**request_dict)
+                # sampling_params = request.to_sampling_params(
+                #     default_max_tokens=self.max_model_len -
+                #     len(prompt_inputs["prompt_token_ids"]))
+                sampling_params = SamplingParams()
+                sampling_params.beam_width = 1
+                sampling_params.max_new_tokens = 100
+                sampling_params.temperature = 0.5
+                sampling_params.top_p = 0.95
+
+                generator = self.llm_engine.generate_async(prompt_inputs,
+                                                streaming=request.stream,
                                                 sampling_params=sampling_params)
                 # generator = self.llm_engine.generate(
                 #     {"prompt_token_ids": prompt_inputs["prompt_token_ids"]},
@@ -78,8 +264,7 @@ class OpenAIServingCompletion(OpenAIServing):
                                                     request_id,
                                                     created_time,
                                                     model_name,
-                                                    num_prompts=len(prompts),
-                                                    tokenizer=tokenizer)
+                                                    num_prompts=len(prompts))
 
         # Non-streaming response
         final_res_batch: List[Optional[RequestOutput]] = [None] * len(prompts)
@@ -105,7 +290,6 @@ class OpenAIServingCompletion(OpenAIServing):
                 request_id,
                 created_time,
                 model_name,
-                tokenizer,
             )
         except asyncio.CancelledError:
             return self.create_error_response("Client disconnected")
@@ -189,8 +373,8 @@ class OpenAIServingCompletion(OpenAIServing):
 
                     previous_texts[i] = output.text
                     previous_num_tokens[i] = len(output.token_ids)
-                    finish_reason = output.finish_reason
-                    stop_reason = output.stop_reason
+                    # finish_reason = output.finish_reason
+                    # stop_reason = output.stop_reason
 
                     chunk = CompletionStreamResponse(
                         id=request_id,
@@ -201,8 +385,8 @@ class OpenAIServingCompletion(OpenAIServing):
                                 index=i,
                                 text=delta_text,
                                 # logprobs=logprobs,
-                                finish_reason=finish_reason,
-                                stop_reason=stop_reason,
+                                # finish_reason=finish_reason,
+                                # stop_reason=stop_reason,
                             )
                         ])
                     if (request.stream_options
@@ -250,7 +434,6 @@ class OpenAIServingCompletion(OpenAIServing):
         request_id: str,
         created_time: int,
         model_name: str,
-        tokenizer: AnyTokenizer,
     ) -> CompletionResponse:
         choices: List[CompletionResponseChoice] = []
         num_prompt_tokens = 0
@@ -307,8 +490,8 @@ class OpenAIServingCompletion(OpenAIServing):
                     index=len(choices),
                     text=output_text,
                     # logprobs=logprobs,
-                    finish_reason=output.finish_reason,
-                    stop_reason=output.stop_reason,
+                    # finish_reason=output.finish_reason,
+                    # stop_reason=output.stop_reason,
                     # prompt_logprobs=final_res.prompt_logprobs,
                 )
                 choices.append(choice_data)

@@ -180,7 +180,8 @@ class CompletionRequest(OpenAIBaseModel):
     # doc: end-completion-extra-params
 
     def to_sampling_params(
-            self, tokenizer: AnyTokenizer,
+            self,
+            # tokenizer: AnyTokenizer,
             # guided_decode_logits_processor: Optional[LogitsProcessor],
             default_max_tokens: int) -> SamplingParams:
         max_tokens = self.max_tokens
@@ -200,34 +201,50 @@ class CompletionRequest(OpenAIBaseModel):
         # )
         # if guided_decode_logits_processor:
         #     logits_processors.append(guided_decode_logits_processor)
+        sampling_params = SamplingParams()
+        sampling_params.max_new_tokens = max_tokens if not echo_without_generation else 1
+        sampling_params.stop = self.stop
+        sampling_params.presence_penalty=self.presence_penalty
+        sampling_params.frequency_penalty=self.frequency_penalty
+        sampling_params.repetition_penalty=self.repetition_penalty
+        sampling_params.temperature=self.temperature
+        sampling_params.top_p=self.top_p
+        sampling_params.top_k=self.top_k
+        sampling_params.top_p_min=self.min_p
+        sampling_params.random_seed=self.seed
+        sampling_params.stop_token_ids=self.stop_token_ids
+        sampling_params.min_length=self.min_tokens
+        sampling_params.early_stopping=self.early_stopping
+        sampling_params.length_penalty=self.length_penalty,
 
-        return SamplingParams.from_optional(
-            n=self.n,
-            best_of=self.best_of,
-            presence_penalty=self.presence_penalty,
-            frequency_penalty=self.frequency_penalty,
-            repetition_penalty=self.repetition_penalty,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            top_k=self.top_k,
-            min_p=self.min_p,
-            seed=self.seed,
-            stop=self.stop,
-            stop_token_ids=self.stop_token_ids,
-            logprobs=self.logprobs,
-            ignore_eos=self.ignore_eos,
-            max_tokens=max_tokens if not echo_without_generation else 1,
-            min_tokens=self.min_tokens,
-            use_beam_search=self.use_beam_search,
-            early_stopping=self.early_stopping,
-            prompt_logprobs=prompt_logprobs,
-            skip_special_tokens=self.skip_special_tokens,
-            spaces_between_special_tokens=self.spaces_between_special_tokens,
-            include_stop_str_in_output=self.include_stop_str_in_output,
-            length_penalty=self.length_penalty,
-            # logits_processors=logits_processors,
-            truncate_prompt_tokens=self.truncate_prompt_tokens,
-        )
+        return sampling_params
+        # return SamplingParams.from_optional(
+        #     n=self.n,
+        #     best_of=self.best_of,
+        #     presence_penalty=self.presence_penalty,
+        #     frequency_penalty=self.frequency_penalty,
+        #     repetition_penalty=self.repetition_penalty,
+        #     temperature=self.temperature,
+        #     top_p=self.top_p,
+        #     top_k=self.top_k,
+        #     min_p=self.min_p,
+        #     seed=self.seed,
+        #     stop=self.stop,
+        #     stop_token_ids=self.stop_token_ids,
+        #     logprobs=self.logprobs,
+        #     ignore_eos=self.ignore_eos,
+        #     max_tokens=max_tokens if not echo_without_generation else 1,
+        #     min_tokens=self.min_tokens,
+        #     use_beam_search=self.use_beam_search,
+        #     early_stopping=self.early_stopping,
+        #     prompt_logprobs=prompt_logprobs,
+        #     skip_special_tokens=self.skip_special_tokens,
+        #     spaces_between_special_tokens=self.spaces_between_special_tokens,
+        #     include_stop_str_in_output=self.include_stop_str_in_output,
+        #     length_penalty=self.length_penalty,
+        #     # logits_processors=logits_processors,
+        #     truncate_prompt_tokens=self.truncate_prompt_tokens,
+        # )
 
     @model_validator(mode="before")
     @classmethod
@@ -341,3 +358,35 @@ class CompletionStreamResponse(OpenAIBaseModel):
     model: str
     choices: List[CompletionResponseStreamChoice]
     usage: Optional[UsageInfo] = Field(default=None)
+
+class TokenizeCompletionRequest(OpenAIBaseModel):
+    model: str
+    prompt: str
+
+    add_special_tokens: bool = Field(default=True)
+
+
+class TokenizeChatRequest(OpenAIBaseModel):
+    model: str
+    messages: List[ChatCompletionMessageParam]
+
+    add_generation_prompt: bool = Field(default=True)
+    add_special_tokens: bool = Field(default=False)
+
+
+TokenizeRequest = Union[TokenizeCompletionRequest, TokenizeChatRequest]
+
+
+class TokenizeResponse(OpenAIBaseModel):
+    count: int
+    max_model_len: int
+    tokens: List[int]
+
+
+class DetokenizeRequest(OpenAIBaseModel):
+    model: str
+    tokens: List[int]
+
+
+class DetokenizeResponse(OpenAIBaseModel):
+    prompt: str

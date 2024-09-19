@@ -1,9 +1,11 @@
 import asyncio
 import uuid
-from typing import (AsyncGenerator, Awaitable, Callable, Optional, Tuple)
+from typing import (AsyncGenerator, Awaitable, Callable, Optional, Tuple, TypeVar)
 from typing import Sequence as GenericSequence
 from asyncio import FIRST_COMPLETED, ensure_future
 from dataclasses import dataclass
+
+T = TypeVar("T")
 
 # We use dataclass for now because it is used for
 # openai server output, and msgspec is not serializable.

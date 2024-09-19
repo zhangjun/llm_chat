@@ -17,7 +17,8 @@ from tensorrt_llm.hlapi.llm_utils import QuantConfig
 from tensorrt_llm.logger import logger
 from tensorrt_llm.quantization.mode import QuantAlgo
 
-from llm_chat.openai.protocol import CompletionRequest, CompletionResponse
+from llm_chat.openai.protocol import CompletionRequest, CompletionResponse, ErrorResponse
+from llm_chat.serving_engine import OpenAIServingCompletion
 
 # docs
 # https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/performance/perf-best-practices.md
@@ -48,6 +49,7 @@ class LlmServer:
     def __init__(self, llm: LLM, kv_cache_config: KvCacheConfig):
         self.llm = llm
         self.kv_cache_config = kv_cache_config
+        self.openai_serving_completion = OpenAIServingCompletion(self.llm)
 
         self.app = FastAPI()
         self.register_routes()
@@ -56,7 +58,7 @@ class LlmServer:
         self.app.add_api_route("/stats", self.stats, methods=["GET"])
         self.app.add_api_route("/health", self.health, methods=["GET"])
         self.app.add_api_route("/generate", self.generate, methods=["POST"])
-        self.app.add_api_route("v1/completions", self.generate, methods=["POST"])
+        self.app.add_api_route("/v1/completions", self.create_completion, methods=["POST"])
 
     async def stats(self) -> Response:
         content = await self.llm._executor.aget_stats()
@@ -96,7 +98,7 @@ class LlmServer:
         return JSONResponse({"text": promise.outputs[0].text})
 
     async def create_completion(self, request: CompletionRequest, raw_request: Request):
-        generator = await openai_serving_completion.create_completion(
+        generator = await self.openai_serving_completion.create_completion(
             request, raw_request)
         if isinstance(generator, ErrorResponse):
             return JSONResponse(content=generator.model_dump(),
@@ -171,17 +173,18 @@ def entrypoint(model_dir: str,
     build_config.plugin_config.use_fp8_context_fmha = True \
          if quant_algo == QuantAlgo.FP8 else False
 
+    kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.8)
+    kv_cache_config.enable_block_reuse = True
+
     llm = LLM(model_dir,
               tokenizer,
               tensor_parallel_size=tp_size,
               pipeline_parallel_size=pp_size,
               dtype="auto",
+              kv_cache_config=kv_cache_config,
               build_config=build_config,
               quant_config=quant_config)
     # llm.save(engine_dir)
-
-    kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.8)
-    kv_cache_config.enable_block_reuse = True
 
     server = LlmServer(llm=llm, kv_cache_config=kv_cache_config)
 
