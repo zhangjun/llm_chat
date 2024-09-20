@@ -223,15 +223,17 @@ class OpenAIServingCompletion(OpenAIServing):
             prompts = request.prompt if isinstance(request.prompt, list) else [request.prompt]
             for i, prompt_inputs in enumerate(prompts):
                 request_id_item = f"{request_id}-{i}"
+                sampling_params = request.to_sampling_params(
+                      default_max_tokens=1024)
                 # sampling_params = SamplingParams(**request_dict)
                 # sampling_params = request.to_sampling_params(
                 #     default_max_tokens=self.max_model_len -
                 #     len(prompt_inputs["prompt_token_ids"]))
-                sampling_params = SamplingParams()
-                sampling_params.beam_width = 1
-                sampling_params.max_new_tokens = 100
-                sampling_params.temperature = 0.5
-                sampling_params.top_p = 0.95
+                # sampling_params = SamplingParams()
+                # sampling_params.beam_width = 1
+                # sampling_params.max_new_tokens = 100
+                # sampling_params.temperature = 0.5
+                # sampling_params.top_p = 0.95
 
                 generator = self.llm_engine.generate_async(prompt_inputs,
                                                 streaming=request.stream,

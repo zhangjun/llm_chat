@@ -201,6 +201,7 @@ class CompletionRequest(OpenAIBaseModel):
         # )
         # if guided_decode_logits_processor:
         #     logits_processors.append(guided_decode_logits_processor)
+        # tensorrt_llm/hlapi/utils.py
         sampling_params = SamplingParams()
         sampling_params.max_new_tokens = max_tokens if not echo_without_generation else 1
         sampling_params.stop = self.stop
@@ -210,12 +211,11 @@ class CompletionRequest(OpenAIBaseModel):
         sampling_params.temperature=self.temperature
         sampling_params.top_p=self.top_p
         sampling_params.top_k=self.top_k
-        sampling_params.top_p_min=self.min_p
         sampling_params.random_seed=self.seed
         sampling_params.stop_token_ids=self.stop_token_ids
         sampling_params.min_length=self.min_tokens
         sampling_params.early_stopping=self.early_stopping
-        sampling_params.length_penalty=self.length_penalty,
+        sampling_params.length_penalty=self.length_penalty
 
         return sampling_params
         # return SamplingParams.from_optional(
