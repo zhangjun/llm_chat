@@ -24,6 +24,7 @@ from llm_chat.serving_engine import OpenAIServingCompletion
 # https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/performance/perf-best-practices.md
 
 TIMEOUT_KEEP_ALIVE = 5  # seconds.
+TIMEOUT_GRACEFUL_SHUTDOWN = 15  # seconds.
 
 VALID_QUANT_ALGOS = Literal[f"{QuantAlgo.W8A16}", f"{QuantAlgo.W4A16}",
                             f"{QuantAlgo.W4A16_AWQ}", f"{QuantAlgo.W4A8_AWQ}",
@@ -113,7 +114,8 @@ class LlmServer:
                                 host=host,
                                 port=port,
                                 log_level="info",
-                                timeout_keep_alive=TIMEOUT_KEEP_ALIVE)
+                                timeout_keep_alive=TIMEOUT_KEEP_ALIVE,
+                                timeout_graceful_shutdown=TIMEOUT_GRACEFUL_SHUTDOWN)
         await uvicorn.Server(config).serve()
 
 
