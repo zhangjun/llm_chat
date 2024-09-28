@@ -375,7 +375,9 @@ class OpenAIServingCompletion(OpenAIServing):
 
                     previous_texts[i] = output.text
                     previous_num_tokens[i] = len(output.token_ids)
-                    # finish_reason = output.finish_reason
+                    finish_reason = None
+                    if res.finished:
+                        finish_reason = 'length' if len(output.token_ids) >= request.max_tokens else 'stop'
                     # stop_reason = output.stop_reason
 
                     chunk = CompletionStreamResponse(
@@ -387,7 +389,7 @@ class OpenAIServingCompletion(OpenAIServing):
                                 index=i,
                                 text=delta_text,
                                 # logprobs=logprobs,
-                                # finish_reason=finish_reason,
+                                finish_reason=finish_reason,
                                 # stop_reason=stop_reason,
                             )
                         ])

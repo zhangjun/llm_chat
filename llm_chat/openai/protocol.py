@@ -116,7 +116,7 @@ class CompletionRequest(OpenAIBaseModel):
 
     # doc: begin-completion-sampling-params
     use_beam_search: bool = False
-    top_k: int = -1
+    top_k: int = 0 # -1
     min_p: float = 0.0
     repetition_penalty: float = 1.0
     length_penalty: float = 1.0
